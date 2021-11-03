@@ -1,0 +1,219 @@
+//The table is the area that you're interested.
+//Compute the individual monthly products
+//MOD13Q1 Resolution: 250m Time: 2001-2015
+var modis = ee.ImageCollection("MODIS/006/MOD13Q1") 
+              .select('NDVI')
+var noaa = ee.ImageCollection("NOAA/CDR/AVHRR/NDVI/V5")
+             .select('NDVI')
+// creat  NDVI time series of modis
+var startyear = 2001; 
+var endyear = 2015; 
+var startmonth = 1;
+var endmonth= 12;
+var startdate = ee.Date.fromYMD(startyear, startmonth, 1);
+var enddate = ee.Date.fromYMD(endyear+1, endmonth, 1);
+var years = ee.List.sequence(startyear, endyear);
+var months = ee.List.sequence(startmonth,endmonth);
+var Modis = modis.filterDate(startdate, enddate)
+                .sort('system:time_start', false);
+//print(Modis)
+//monthly Modis ndvi
+var Modism =  ee.ImageCollection.fromImages(
+  years.map(function (y) {
+    return months.map(function(m) {
+    // var n=m+1;
+     //print(m)
+      var w = Modis.filter(ee.Filter.calendarRange(y, y, 'year'))
+                  .filter(ee.Filter.calendarRange(m, m, 'month'))
+                  .max()
+                  .multiply(0.0001)
+                  .clip(table);
+      return w.set('year', y)
+              .set('month', m)
+              .set('system:time_start',ee.Date.fromYMD(y,m,1).millis()) 
+              //ee.Date.fromYMD(y, m, 1));
+                        
+    });
+  }).flatten()
+);
+//monthly NOAA ndvi (2001-2015)
+var Noaa = noaa.filterDate(startdate, enddate)
+                .sort('system:time_start', false);
+var Noaam =  ee.ImageCollection.fromImages(
+  years.map(function (y) {
+    return months.map(function(m) {
+    // var n=m+1;
+     //print(m)
+      var w = Noaa.filter(ee.Filter.calendarRange(y, y, 'year'))
+                  .filter(ee.Filter.calendarRange(m, m, 'month'))
+                  .max()
+                  .multiply(0.0001)
+                  .resample('bicubic')
+                  .clip(table);
+      return w.set('year', y)
+              .set('month', m)
+              .set('system:time_start',ee.Date.fromYMD(y,m,1).millis()) 
+              //ee.Date.fromYMD(y, m, 1));
+                        
+    });
+  }).flatten()
+);
+//Calculate the corresponding monthly median
+var sm = 1
+var em = 12
+var month = ee.List.sequence(sm,em)
+var getimage_1 = function(f){
+  var month = Modism.filterMetadata('month', 'equals', f)
+  var med = month.reduce(ee.Reducer.median())
+                 .rename('MMD')
+                 .set('month',f)
+  return med
+}
+var month_med = ee.ImageCollection(month.map(getimage_1))
+var getimage_2 = function(f){
+  var month = Noaam.filterMetadata('month', 'equals', f)
+  var med = month.reduce(ee.Reducer.median())
+                 .rename('NMD')
+                 .set('month',f)
+  return med
+}
+var month_ned = ee.ImageCollection(month.map(getimage_2))
+//Calculate the coefficient of variation
+// CV of MODIS
+var getimage_3 = function(f){
+  var month = Modism.filterMetadata('month', 'equals', f)
+  var std = month.reduce(ee.Reducer.stdDev())
+  var mean = month.mean()
+  var mcv = std.divide(mean)
+               .rename('MCV')
+               .set('month',f)
+  return mcv
+}
+var month_cv = ee.ImageCollection(month.map(getimage_3))
+// CV of NOAA
+var startyear = 1982; 
+var endyear = 2015; 
+var startmonth = 1;
+var endmonth= 12;
+var startdate = ee.Date.fromYMD(startyear, startmonth, 1);
+var enddate = ee.Date.fromYMD(endyear+1, endmonth, 1);
+var years = ee.List.sequence(startyear, endyear);
+var months = ee.List.sequence(startmonth,endmonth);
+var Noaa = noaa.filterDate(startdate, enddate)
+                .sort('system:time_start', false);
+var Noaac =  ee.ImageCollection.fromImages(
+  years.map(function (y) {
+    return months.map(function(m) {
+    // var n=m+1;
+     //print(m)
+      var w = Noaa.filter(ee.Filter.calendarRange(y, y, 'year'))
+                  .filter(ee.Filter.calendarRange(m, m, 'month'))
+                  .max()
+                  .multiply(0.0001)
+                  .resample('bicubic')
+                  .clip(table);
+      return w.set('year', y)
+              .set('month', m)
+              .set('system:time_start',ee.Date.fromYMD(y,m,1).millis()) 
+              //ee.Date.fromYMD(y, m, 1));
+                        
+    });
+  }).flatten()
+);
+var getimage_4 = function(f){
+  var month = Noaac.filterMetadata('month', 'equals', f)
+  var std = month.reduce(ee.Reducer.stdDev())
+  var mean = month.mean()
+  var mcv = std.divide(mean)
+               .rename('NCV')
+               .set('month',f)
+//               .resample('bicubic')
+  return mcv
+}
+var month_cv2 = ee.ImageCollection(month.map(getimage_4))
+//print(month_cv2)
+//Require temporal and spatial trend
+// Compute the CVx,y
+var filtereq = ee.Filter.equals({
+  leftField: 'month',
+  rightField: 'month',
+});
+var join = ee.Join.saveFirst({
+    matchKey: 'match',
+});
+var CVA = ee.ImageCollection(join.apply(month_cv,month_cv2,filtereq))
+  .map(function(image) {
+    return image.addBands(image.get('match'));
+  });
+var CV_ALL= CVA.map(function(image) {
+  return image.addBands(
+    image.expression('(a1/b1)', {
+      a1: image.select('MCV'),
+      b1: image.select('NCV'),
+    }).rename('CV'));
+});
+
+// Compute the Kx,y
+var startyear = 1982; 
+var endyear = 2020; 
+var startmonth = 1;
+var endmonth= 12;
+var startdate = ee.Date.fromYMD(startyear, startmonth, 1);
+var enddate = ee.Date.fromYMD(endyear+1 , endmonth, 1);
+var years = ee.List.sequence(startyear, endyear);
+var months = ee.List.sequence(startmonth,endmonth);
+var Noaad =  ee.ImageCollection.fromImages(
+  years.map(function (y) {
+    return months.map(function(m) {
+    // var n=m+1;
+     //print(m)
+      var w = noaa.filter(ee.Filter.calendarRange(y, y, 'year'))
+                  .filter(ee.Filter.calendarRange(m, m, 'month'))
+                  .max()
+                  .multiply(0.0001)
+                  .resample('bicubic')
+                  .clip(table);
+      return w.set('year', y)
+              .set('month', m)
+              .set('system:time_start',ee.Date.fromYMD(y,m,1).millis()) 
+              //ee.Date.fromYMD(y, m, 1));
+                        
+    });
+  }).flatten()
+);
+var all = ee.ImageCollection(join.apply(Noaad,month_ned,filtereq))
+  .map(function(image) {
+    return image.addBands(image.get('match'));
+  });
+var k = all.map(function(image) {
+  return image.addBands(
+    image.expression('((a1-b1)/b1)', {
+      a1: image.select('NDVI'),
+      b1: image.select('NMD'),
+    }).rename('NDVI_K'))//.resample('bicubic');
+});
+// Obtain the final downscaled products 
+var all1 = ee.ImageCollection(join.apply(k,CV_ALL,filtereq))
+  .map(function(image) {
+    return image.addBands(image.get('match'));
+  });
+var all2 = ee.ImageCollection(join.apply(all1,month_med,filtereq))
+  .map(function(image) {
+    return image.addBands(image.get('match'));
+  });
+//print(month_med)
+var ALL = all2.map(function(image) {
+  return image.addBands(
+    image.expression('((1+a1*b1)*c1)', {
+      a1: image.select('NDVI_K'),
+      b1: image.select('CV'),
+      c1: image.select('MMD'),
+    }).rename('NDVI_D'));
+});
+var downscaled = ALL.select('NDVI_D')
+var downscaled = downscaled.map(function(img){
+  var img = img.clip(table)
+  var img_gte = img.gt(0).and(img.lte(1))
+  var img = img.updateMask(img_gte)
+  return img
+})
